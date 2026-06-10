@@ -32,6 +32,7 @@ function initDashboard() {
         allClients = data.clients;
         if (data.redash) { mergeRedashData(data.redash); enrichClientsWithRedash(); }
         if (data.jira)   mergeJiraData(data.jira);
+        if (data.tasks)  allTasks = data.tasks;
         saveClientsLocally(); // cache locally
         showLoading(false);
         normalizeClients();
@@ -2570,6 +2571,13 @@ function saveTaskFromModal() {
   if (currentView === 'overview') renderOverview();
   if (currentView === 'detail' && activeClientId) renderClientTasksSection(activeClientId);
   updateTasksBadge();
+
+  // Sync to Google Sheets
+  const savedTask = id ? allTasks.find(x => x.id === id) : allTasks[allTasks.length - 1];
+  if (savedTask) {
+    fetch(GAS_URL, { method: 'POST', body: JSON.stringify({ action: 'saveTask', task: savedTask }) })
+      .catch(e => console.warn('Task sync failed:', e));
+  }
 }
 
 function deleteTaskFromModal() {
@@ -2584,6 +2592,10 @@ function deleteTaskFromModal() {
   if (currentView === 'detail' && activeClientId) renderClientTasksSection(activeClientId);
   updateTasksBadge();
   showToast('Task deleted');
+
+  // Sync delete to Google Sheets
+  fetch(GAS_URL, { method: 'POST', body: JSON.stringify({ action: 'deleteTask', taskId: id }) })
+    .catch(e => console.warn('Task delete sync failed:', e));
 }
 
 // ─── CLIENT DETAIL TASKS SECTION ─────────────────────────────────────────────

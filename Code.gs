@@ -20,6 +20,7 @@ const SPREADSHEET_ID = '1o5doF31E-Kh8_2NSYm0H8vgUwUlb7O6iFTpfMjxhngU';
 
 const TABS = {
   clients:         'Client Details',
+  tasks:           'Tasks',
   summary:         'CS Summary',
   activity:        'Client Activity',
   wau:             'WAU',
@@ -28,6 +29,8 @@ const TABS = {
   inboxActivity:   'Inbox: Activity',
   inboxWau:        'Inbox: WAU',
 };
+
+const TASK_COLS = ['id','text','clientId','workstream','owner','priority','dueDate','type','notes','jiraLink','slackLink','tags','done','createdAt','updatedAt'];
 
 const CLIENT_COLS = [
   'id','name','locationCount','tier','accountHealth','currency','contractValue',
@@ -152,8 +155,26 @@ function parseSheetDate(val) {
     const d = String(val.getDate()).padStart(2, '0');
     return y + '-' + m + '-' + d;
   }
-  const s = String(val).substring(0, 10);
-  return s.length === 10 ? s : null;
+  const s = String(val).trim();
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0, 10);
+  // "26 March 2025" or "26 Mar 2025"
+  const months = {january:'01',february:'02',march:'03',april:'04',may:'05',june:'06',
+                  july:'07',august:'08',september:'09',october:'10',november:'11',december:'12',
+                  jan:'01',feb:'02',mar:'03',apr:'04',jun:'06',jul:'07',
+                  aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+  const m1 = s.match(/^(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})$/);
+  if (m1) {
+    const mo = months[m1[2].toLowerCase()];
+    if (mo) return m1[3] + '-' + mo + '-' + String(m1[1]).padStart(2, '0');
+  }
+  // "March 26, 2025" or "March 2025" (no day — skip)
+  const m2 = s.match(/^([a-zA-Z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+  if (m2) {
+    const mo = months[m2[1].toLowerCase()];
+    if (mo) return m2[3] + '-' + mo + '-' + String(m2[2]).padStart(2, '0');
+  }
+  return null;
 }
 
 // ─── doGet — load everything ──────────────────────────────────────────────────
@@ -164,7 +185,8 @@ function doGet(e) {
     const clients = readClients(ss);
     const redash  = readRedash(ss);
     const jira    = readJiraTickets(ss);
-    return respond({ clients, redash, jira });
+    const tasks   = readTasks(ss);
+    return respond({ clients, redash, jira, tasks });
   } catch(err) {
     return respond({ error: err.message });
   }
@@ -178,10 +200,12 @@ function doPost(e) {
     const sheet   = getOrCreateClientSheet(ss);
     const headers = getSheetHeaders(sheet);
 
-    if      (payload.action === 'update')   updateClient(ss, payload.client);
-    else if (payload.action === 'add')      addClient(ss, payload.client);
-    else if (payload.action === 'delete')   deleteClient(ss, payload.clientId);
-    else if (payload.action === 'inboxWau') writeInboxWau(ss, payload.rows);
+    if      (payload.action === 'update')      updateClient(ss, payload.client);
+    else if (payload.action === 'add')         addClient(ss, payload.client);
+    else if (payload.action === 'delete')      deleteClient(ss, payload.clientId);
+    else if (payload.action === 'inboxWau')    writeInboxWau(ss, payload.rows);
+    else if (payload.action === 'saveTask')    saveTask(ss, payload.task);
+    else if (payload.action === 'deleteTask')  deleteTask(ss, payload.taskId);
     else throw new Error('Unknown action: ' + payload.action);
     return respond({ success: true });
   } catch(err) {
@@ -624,4 +648,67 @@ function createInboxTabs() {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   setupInboxSheets(ss);
   Logger.log('✅ Inbox tabs created.');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TASKS
+// ════════════════════════════════════════════════════════════════════════════
+function getOrCreateTaskSheet(ss) {
+  let sheet = ss.getSheetByName(TABS.tasks);
+  if (!sheet) {
+    sheet = ss.insertSheet(TABS.tasks);
+    sheet.getRange(1, 1, 1, TASK_COLS.length).setValues([TASK_COLS]);
+    sheet.getRange(1, 1, 1, TASK_COLS.length)
+      .setBackground('#00C4B0').setFontColor('#ffffff').setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    TASK_COLS.forEach((_, i) => sheet.autoResizeColumn(i + 1));
+  }
+  return sheet;
+}
+
+function readTasks(ss) {
+  const sheet = getOrCreateTaskSheet(ss);
+  if (sheet.getLastRow() < 2) return [];
+  const data    = sheet.getDataRange().getValues();
+  const headers = data[0].map(String);
+  const tasks   = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    if (!row[0]) continue;
+    const t = {};
+    headers.forEach((h, i) => { t[h] = row[i] === '' ? null : row[i]; });
+    t.done = t.done === true || t.done === 'TRUE' || t.done === 1;
+    tasks.push(t);
+  }
+  return tasks;
+}
+
+function findTaskRow(sheet, taskId) {
+  const vals = sheet.getRange(1, 1, sheet.getLastRow(), 1).getValues();
+  for (let r = 1; r < vals.length; r++) {
+    if (String(vals[r][0]) === String(taskId)) return r + 1;
+  }
+  return -1;
+}
+
+function saveTask(ss, task) {
+  const sheet   = getOrCreateTaskSheet(ss);
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+  const rowData = headers.map(h => {
+    const v = task[h];
+    if (v === undefined || v === null) return '';
+    return v;
+  });
+  const rowNum = findTaskRow(sheet, task.id);
+  if (rowNum > 0) {
+    sheet.getRange(rowNum, 1, 1, rowData.length).setValues([rowData]);
+  } else {
+    sheet.appendRow(rowData);
+  }
+}
+
+function deleteTask(ss, taskId) {
+  const sheet  = getOrCreateTaskSheet(ss);
+  const rowNum = findTaskRow(sheet, taskId);
+  if (rowNum > 0) sheet.deleteRow(rowNum);
 }
