@@ -178,11 +178,12 @@ function doPost(e) {
     const sheet   = getOrCreateClientSheet(ss);
     const headers = getSheetHeaders(sheet);
 
-    if      (payload.action === 'update') updateClient(ss, payload.client);
-    else if (payload.action === 'add')    addClient(ss, payload.client);
-    else if (payload.action === 'delete') deleteClient(ss, payload.clientId);
+    if      (payload.action === 'update')   updateClient(ss, payload.client);
+    else if (payload.action === 'add')      addClient(ss, payload.client);
+    else if (payload.action === 'delete')   deleteClient(ss, payload.clientId);
+    else if (payload.action === 'inboxWau') writeInboxWau(ss, payload.rows);
     else throw new Error('Unknown action: ' + payload.action);
-    return respond({ success: true, debug: { headerCount: headers.length, headers: headers } });
+    return respond({ success: true });
   } catch(err) {
     return respond({ error: err.message });
   }
@@ -198,6 +199,40 @@ function doOptions(e) {
   return ContentService
     .createTextOutput('')
     .setMimeType(ContentService.MimeType.TEXT);
+}
+
+// ─── writeInboxWau — called by Cowork automation every Monday ─────────────────
+function writeInboxWau(ss, rows) {
+  if (!rows || !rows.length) return;
+
+  const sheet = ss.getSheetByName(TABS.inboxWau);
+  if (!sheet) throw new Error('Inbox: WAU tab not found');
+
+  // Clear existing data below header row
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+
+  // Headers: Client__filter, org, Period, WAU, id, org_id, org_name, country, sector, owner, status, paid
+  // We write the columns we have; leave others blank
+  const newRows = rows.map(r => [
+    r.client || '',  // Client__filter
+    r.client || '',  // org
+    r.week   || '',  // Period
+    r.wau    || 0,   // WAU
+    '',              // id
+    '',              // org_id
+    r.client || '',  // org_name
+    '',              // country
+    '',              // sector
+    'AS',            // owner
+    '',              // status
+    '',              // paid
+  ]);
+
+  sheet.getRange(2, 1, newRows.length, newRows[0].length).setValues(newRows);
+
+  // Trigger the merge so data flows into the main WAU history tab immediately
+  mergeInboxTab(ss, TABS.inboxWau, TABS.wau, mergeWauRow);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
