@@ -30,6 +30,8 @@ function initDashboard() {
       if (data.error) throw new Error(data.error);
       if (data.clients && data.clients.length > 0) {
         allClients = data.clients;
+        if (data.redash) mergeRedashData(data.redash);
+        if (data.jira)   mergeJiraData(data.jira);
         saveClientsLocally(); // cache locally
         showLoading(false);
         normalizeClients();
